@@ -10,20 +10,19 @@ const TEMP_DIR = os.tmpdir();
 console.log('Using system temp directory:', TEMP_DIR);
 
 /**
- * Checks if the submitted code contains an implementation
- * or just comments/placeholders
+ * Checks if the submitted code contains the required function
  */
-const validateCode = (code) => {
+const validateCode = (code, functionName) => {
   // Split the code into lines
   const lines = code.split('\n');
   
-  // Check if there's a function definition
-  const functionLineIndex = lines.findIndex(line => line.trim().startsWith('def two_sum'));
+  // Check if there's a function definition for the required function
+  const functionLineIndex = lines.findIndex(line => line.trim().startsWith(`def ${functionName}(`));
   
   if (functionLineIndex === -1) {
     return {
       valid: false,
-      error: 'No two_sum function found. Please define a function named two_sum(nums, target).'
+      error: `The function "${functionName}" is not defined. Please define it as: def ${functionName}(...)`
     };
   }
   
@@ -64,13 +63,13 @@ const validateCode = (code) => {
 /**
  * Prepares a test file with the user's code and test cases
  */
-const prepareTestFile = (code) => {
+const prepareTestFile = (code, functionName, exampleInput, exampleOutput) => {
   const uuid = uuidv4();
   const filePath = path.join(TEMP_DIR, `${uuid}.py`);
   console.log('Creating test file at:', filePath);
   
   // Validate and potentially modify the code
-  const validation = validateCode(code);
+  const validation = validateCode(code, functionName);
   
   if (!validation.valid) {
     throw new Error(validation.error);
@@ -79,14 +78,18 @@ const prepareTestFile = (code) => {
   // Use the potentially modified code
   const validatedCode = validation.modifiedCode;
   
-  // Test cases for the two_sum problem
-  const testCases = [
-    { input: '[2, 7, 11, 15], 9', output: '[0, 1]' },
-    { input: '[3, 2, 4], 6', output: '[1, 2]' },
-    { input: '[3, 3], 6', output: '[0, 1]' }
-  ];
-  
-  // Directly include user code at the beginning, then our test harness
+  // Check if the function is inside a class
+  const isClassBased = /class\s+\w+\s*\(/.test(code);
+
+  // Strip variable names from exampleInput (e.g., "nums=[1,2,3,1]" -> "[1,2,3,1]")
+  const strippedInput = exampleInput.replace(/^\w+=/, '').trim();
+
+  // Format exampleInput to ensure it is valid Python syntax
+  const formattedInput = strippedInput.startsWith('[') || strippedInput.startsWith('{') || strippedInput.startsWith('(')
+    ? strippedInput // Input is already a list, dict, or tuple
+    : `[${strippedInput}]`; // Wrap in a list if it's a single value
+
+  // Generate the test harness
   const testCode = `${validatedCode}
 
 import json
@@ -96,57 +99,27 @@ def run_tests():
     results = []
     
     try:
-        # Test case 1
+        # Test case
         start_time = time.time()
-        nums = [2, 7, 11, 15]
-        target = 9
-        expected = "[0, 1]"
+        input_data = ${formattedInput}  # Ensure valid Python syntax
+        expected = ${JSON.stringify(exampleOutput)}  # Ensure valid Python syntax
         
-        actual = two_sum(nums, target)
+        ${isClassBased ? `
+        # Instantiate the class and call the method
+        solution = Solution()
+        actual = solution.${functionName}(input_data)
+        ` : `
+        # Call the function directly
+        actual = ${functionName}(input_data)
+        `}
+        
         execution_time = time.time() - start_time
         
         results.append({
-            "case": 1,
-            "input": "[2, 7, 11, 15], 9",
-            "expected": "[0, 1]",
+            "input": str(input_data),
+            "expected": str(expected),
             "actual": str(actual),
-            "passed": str(actual) == "[0, 1]",
-            "execution_time": execution_time
-        })
-        
-        # Test case 2
-        start_time = time.time()
-        nums = [3, 2, 4]
-        target = 6
-        expected = "[1, 2]"
-        
-        actual = two_sum(nums, target)
-        execution_time = time.time() - start_time
-        
-        results.append({
-            "case": 2,
-            "input": "[3, 2, 4], 6",
-            "expected": "[1, 2]",
-            "actual": str(actual),
-            "passed": str(actual) == "[1, 2]",
-            "execution_time": execution_time
-        })
-        
-        # Test case 3
-        start_time = time.time()
-        nums = [3, 3]
-        target = 6
-        expected = "[0, 1]"
-        
-        actual = two_sum(nums, target)
-        execution_time = time.time() - start_time
-        
-        results.append({
-            "case": 3,
-            "input": "[3, 3], 6",
-            "expected": "[0, 1]",
-            "actual": str(actual),
-            "passed": str(actual) == "[0, 1]",
+            "passed": str(actual).lower() == str(expected).lower(),
             "execution_time": execution_time
         })
     except Exception as e:
@@ -178,7 +151,7 @@ const executeCode = (filePath, message = null) => {
   console.log('Executing Python file:', filePath);
   
   return new Promise((resolve, reject) => {
-    exec(`python "${filePath}"`, (error, stdout, stderr) => {
+    exec(`python3 "${filePath}"`, (error, stdout, stderr) => {
       console.log('Python execution complete');
       
       // Log results for debugging
@@ -246,11 +219,11 @@ const executeCode = (filePath, message = null) => {
 /**
  * Runs the user's code against test cases
  */
-const runCode = async (code) => {
+const runCode = async (code, functionName, exampleInput, exampleOutput) => {
   console.log('Running code execution process');
   try {
     // Prepare the test file
-    const { filePath, message } = prepareTestFile(code);
+    const { filePath, message } = prepareTestFile(code, functionName, exampleInput, exampleOutput);
     
     // Execute the code
     return await executeCode(filePath, message);

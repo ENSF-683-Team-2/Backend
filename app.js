@@ -10,7 +10,7 @@ const { runCode } = require('./services/codeExecution');
 
 // Initialize express app
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
@@ -44,7 +44,7 @@ const db = new sqlite3.Database('./code_platform.db', (err) => {
         FOREIGN KEY (user_id) REFERENCES users (id)
       )
     `);
-
+    
     db.run(`
       CREATE TABLE IF NOT EXISTS problems (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,7 +52,8 @@ const db = new sqlite3.Database('./code_platform.db', (err) => {
         description TEXT NOT NULL,
         example_input TEXT,
         example_output TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        level TEXT CHECK(level IN ('low', 'medium', 'high')), starter_code TEXT, fn_name TEXT
       )
     `);
   }
@@ -170,49 +171,100 @@ app.get('/api/submissions', authenticateToken, (req, res) => {
   );
 });
 
+// Fetch a problem by ID
+app.get('/api/problems/:id', (req, res) => {
+  const { id } = req.params; // Extract `id` from the URL
+  console.log(`Fetching problem with ID: ${id}`); // Debug log
+
+  db.get(
+    'SELECT * FROM problems WHERE id = ?', // Use `id` in the SQL query
+    [id], // Pass `id` as a parameter to the query
+    (err, problem) => {
+      if (err) {
+        console.error('Database error:', err); // Debug log
+        return res.status(500).json({ error: 'Database error' });
+      }
+      if (!problem) {
+        console.warn(`Problem with ID ${id} not found`); // Debug log
+        return res.status(404).json({ error: 'Problem not found' });
+      }
+      console.log(`Problem fetched:`, problem); // Debug log
+      res.json(problem);
+    }
+  );
+});
 
 // Run code with actual Python execution
 app.post('/api/run', authenticateToken, async (req, res) => {
   console.log('Run API endpoint called');
-  const { code } = req.body;
+  const { code, problem_id } = req.body;
   const { id: user_id } = req.user;
-  
-  if (!code) {
-    return res.status(400).json({ error: 'Code is required' });
+
+  if (!code || !problem_id) {
+    if(!code){
+      return res.status(400).json({ error: 'Its the code' });
+    }
+    return res.status(400).json({ error: 'Code and problem_id are required' });
   }
-  
-  console.log('User code received:', code.substring(0, 100) + '...');
-  
-  try {
-    // Execute the code
-    console.log('Calling runCode function');
-    const results = await runCode(code);
-    console.log('Execution results:', JSON.stringify(results).substring(0, 100) + '...');
-    
-    // Store the submission (even if it failed)
-    db.run(
-      'INSERT INTO submissions (user_id, problem_id, code, status) VALUES (?, ?, ?, ?)',
-      [user_id, 1, code, results.success ? 'passed' : 'failed'],
-      function(err) {
-        if (err) {
-          console.error('Database error:', err);
-          return res.status(500).json({ error: err.message });
-        }
-        
-        console.log('Submission stored, ID:', this.lastID);
-        res.json({
-          submission_id: this.lastID,
-          ...results
+
+  console.log(`User code received for problem ID ${problem_id}:`, code.substring(0, 100) + '...');
+
+  // Fetch problem details from the database
+  db.get(
+    'SELECT fn_name, example_input, example_output FROM problems WHERE id = ?',
+    [problem_id],
+    async (err, problem) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      if (!problem) {
+        console.warn(`Problem with ID ${problem_id} not found`);
+        return res.status(404).json({ error: 'Problem not found' });
+      }
+
+      console.log(`Fetched problem details:`, problem);
+
+      try {
+        // Sanitize the function name
+        // const functionName = problem.fn_name.replace(/\s+/g, '_').toLowerCase();
+        const functionName = problem.fn_name;
+
+        console.log('Function name:', functionName);
+        const exampleInput = problem.example_input.replace('Input: ', '').trim();
+        const exampleOutput = problem.example_output.trim();
+
+        // Execute the code
+        console.log('Calling runCode function');
+        const results = await runCode(code, functionName, exampleInput, exampleOutput);
+        console.log('Execution results:', JSON.stringify(results).substring(0, 100) + '...');
+
+        // Store the submission (even if it failed)
+        db.run(
+          'INSERT INTO submissions (user_id, problem_id, code, status) VALUES (?, ?, ?, ?)',
+          [user_id, problem_id, code, results.success ? 'passed' : 'failed'],
+          function (err) {
+            if (err) {
+              console.error('Database error:', err);
+              return res.status(500).json({ error: err.message });
+            }
+
+            console.log('Submission stored, ID:', this.lastID);
+            res.json({
+              submission_id: this.lastID,
+              ...results,
+            });
+          }
+        );
+      } catch (error) {
+        console.error('Error in /api/run:', error);
+        res.status(500).json({
+          success: false,
+          error: 'An error occurred while processing your code: ' + error.message,
         });
       }
-    );
-  } catch (error) {
-    console.error('Error in /api/run:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'An error occurred while processing your code: ' + error.message
-    });
-  }
+    }
+  );
 });
 
 // Start server
