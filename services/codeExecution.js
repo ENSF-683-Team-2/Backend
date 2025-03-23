@@ -87,7 +87,7 @@ const prepareTestFile = (code, functionName, exampleInput, exampleOutput) => {
   // Format exampleInput to ensure it is valid Python syntax
   const formattedInput = strippedInput.startsWith('[') || strippedInput.startsWith('{') || strippedInput.startsWith('(')
     ? strippedInput // Input is already a list, dict, or tuple
-    : `[${strippedInput}]`; // Wrap in a list if it's a single value
+    : `${strippedInput}`; // Wrap in a list if it's a single value
 
   // Generate the test harness
   const testCode = `${validatedCode}
