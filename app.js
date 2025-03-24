@@ -75,10 +75,8 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Routes
-
-
 app.post('/api/analyze', authenticateToken, async (req, res) => {
-  const { code, problem_id } = req.body;
+  const { code, problem_id, results } = req.body;
   const { id: user_id } = req.user;
 
   if (!code || !problem_id) {
@@ -99,14 +97,20 @@ app.post('/api/analyze', authenticateToken, async (req, res) => {
       }
 
       const prompt = `
-        You are a senior software engineer. Provide short, specific feedback on this code in relation to the problem’s solution. If the code doesn’t solve it, give a brief hint to reach the solution. If it works, suggest one or two concise improvements. Limit your response to 1-2 sentences:
+        You are a coding mentor giving extremely brief feedback on Python code.
+        
         Problem: ${problem.title}
         Description: ${problem.description}
         Example Input: ${problem.example_input}
         Example Output: ${problem.example_output}
+        
         Code: \`\`\`python
         ${code}
         \`\`\`
+        
+        ${results ? `Test results: ${results}` : ''}
+        
+        Give one single, ultra-concise feedback point in exactly 5-8 sentences. Format your response with Markdown, using **bold** for key points or \`inline code\` for relevant syntax elements. Keep your entire response under 140 characters - be as brief as possible while still being helpful.
       `;
 
       try {
@@ -119,12 +123,11 @@ app.post('/api/analyze', authenticateToken, async (req, res) => {
           {
             model: 'gemma3',
             prompt: prompt,
-            stream: true, // Enable streaming
+            stream: true,
           },
-          { responseType: 'stream' } // Handle as a stream
+          { responseType: 'stream' }
         );
 
-        // Pipe Ollama's stream to the response
         ollamaResponse.data.pipe(res);
 
         // Save to database after streaming is complete
@@ -266,7 +269,7 @@ app.get('/api/problems/:id', (req, res) => {
   );
 });
 
-// Run code with actual Python execution
+// Run code with actual Python execution (without saving to database)
 app.post('/api/run', authenticateToken, async (req, res) => {
   console.log('Run API endpoint called');
   const { code, problem_id } = req.body;
@@ -299,7 +302,6 @@ app.post('/api/run', authenticateToken, async (req, res) => {
 
       try {
         // Sanitize the function name
-        // const functionName = problem.fn_name.replace(/\s+/g, '_').toLowerCase();
         const functionName = problem.fn_name;
 
         console.log('Function name:', functionName);
@@ -311,29 +313,98 @@ app.post('/api/run', authenticateToken, async (req, res) => {
         const results = await runCode(code, functionName, exampleInput, exampleOutput);
         console.log('Execution results:', JSON.stringify(results).substring(0, 100) + '...');
 
-        // Store the submission (even if it failed)
-        db.run(
-          'INSERT INTO submissions (user_id, problem_id, code, status) VALUES (?, ?, ?, ?)',
-          [user_id, problem_id, code, results.success ? 'passed' : 'failed'],
-          function (err) {
-            if (err) {
-              console.error('Database error:', err);
-              return res.status(500).json({ error: err.message });
-            }
-
-            console.log('Submission stored, ID:', this.lastID);
-            res.json({
-              submission_id: this.lastID,
-              ...results,
-            });
-          }
-        );
+        // Return results without storing in database
+        res.json(results);
       } catch (error) {
         console.error('Error in /api/run:', error);
         res.status(500).json({
           success: false,
           error: 'An error occurred while processing your code: ' + error.message,
         });
+      }
+    }
+  );
+});
+
+// Fetch all problems
+app.get('/api/problems', (req, res) => {
+  db.all(
+    'SELECT id, title, description, level FROM problems ORDER BY id ASC',
+    (err, problems) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      // Process problem descriptions for preview
+      const processedProblems = problems.map(problem => {
+        return {
+          ...problem,
+          description: problem.description
+        };
+      });
+      
+      res.json(processedProblems);
+    }
+  );
+});
+
+app.post('/api/hint', authenticateToken, async (req, res) => {
+  const { code, problem_id, results } = req.body;
+
+  if (!code || !problem_id) {
+    return res.status(400).json({ error: 'Code and problem_id are required' });
+  }
+
+  db.get(
+    'SELECT title, description, example_input, example_output FROM problems WHERE id = ?',
+    [problem_id],
+    async (err, problem) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      if (!problem) {
+        console.warn(`Problem with ID ${problem_id} not found`);
+        return res.status(404).json({ error: 'Problem not found' });
+      }
+
+      const prompt = `
+        You are a helpful programming tutor. Give a short, focused hint for this Python coding problem:
+        
+        Problem: ${problem.title}
+        Description: ${problem.description}
+        Example Input: ${problem.example_input}
+        Example Output: ${problem.example_output}
+        
+        Code: \`\`\`python
+        ${code}
+        \`\`\`
+        
+        ${results ? `Test results: ${results}` : ''}
+        
+        Provide ONE specific hint in 1-2 sentences that points them in the right direction without giving away the solution. Be concise and direct.
+      `;
+
+      try {
+        // Set response headers for streaming
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Transfer-Encoding', 'chunked');
+
+        const ollamaResponse = await axios.post(
+          'http://localhost:11434/api/generate',
+          {
+            model: 'gemma3',
+            prompt: prompt,
+            stream: true,
+          },
+          { responseType: 'stream' }
+        );
+
+        ollamaResponse.data.pipe(res);
+      } catch (error) {
+        console.error('Error communicating with Ollama:', error.message);
+        res.status(500).json({ error: 'Failed to generate hint: ' + error.message });
       }
     }
   );
