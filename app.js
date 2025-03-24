@@ -5,6 +5,7 @@ const bodyParser = require('body-parser');
 const sqlite3 = require('sqlite3').verbose();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const axios = require('axios');
 
 const { runCode } = require('./services/codeExecution');
 
@@ -74,6 +75,77 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Routes
+
+
+app.post('/api/analyze', authenticateToken, async (req, res) => {
+  const { code, problem_id } = req.body;
+  const { id: user_id } = req.user;
+
+  if (!code || !problem_id) {
+    return res.status(400).json({ error: 'Code and problem_id are required' });
+  }
+
+  db.get(
+    'SELECT title, description, example_input, example_output FROM problems WHERE id = ?',
+    [problem_id],
+    async (err, problem) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      if (!problem) {
+        console.warn(`Problem with ID ${problem_id} not found`);
+        return res.status(404).json({ error: 'Problem not found' });
+      }
+
+      const prompt = `
+        You are a senior software engineer. Provide short, specific feedback on this code in relation to the problem’s solution. If the code doesn’t solve it, give a brief hint to reach the solution. If it works, suggest one or two concise improvements. Limit your response to 1-2 sentences:
+        Problem: ${problem.title}
+        Description: ${problem.description}
+        Example Input: ${problem.example_input}
+        Example Output: ${problem.example_output}
+        Code: \`\`\`python
+        ${code}
+        \`\`\`
+      `;
+
+      try {
+        // Set response headers for streaming
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Transfer-Encoding', 'chunked');
+
+        const ollamaResponse = await axios.post(
+          'http://localhost:11434/api/generate',
+          {
+            model: 'gemma3',
+            prompt: prompt,
+            stream: true, // Enable streaming
+          },
+          { responseType: 'stream' } // Handle as a stream
+        );
+
+        // Pipe Ollama's stream to the response
+        ollamaResponse.data.pipe(res);
+
+        // Save to database after streaming is complete
+        ollamaResponse.data.on('end', () => {
+          db.run(
+            'INSERT INTO submissions (user_id, problem_id, code, status) VALUES (?, ?, ?, ?)',
+            [user_id, problem_id, code, 'analyzed'],
+            function (err) {
+              if (err) {
+                console.error('Database insertion error:', err);
+              }
+            }
+          );
+        });
+      } catch (error) {
+        console.error('Error communicating with Ollama:', error.message);
+        res.status(500).json({ error: 'Failed to analyze code: ' + error.message });
+      }
+    }
+  );
+});
 
 // Register user
 app.post('/api/register', async (req, res) => {

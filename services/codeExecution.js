@@ -151,7 +151,7 @@ const executeCode = (filePath, message = null) => {
   console.log('Executing Python file:', filePath);
   
   return new Promise((resolve, reject) => {
-    exec(`python3 "${filePath}"`, (error, stdout, stderr) => {
+    exec(`python "${filePath}"`, (error, stdout, stderr) => {
       console.log('Python execution complete');
       
       // Log results for debugging
